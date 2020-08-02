@@ -460,6 +460,61 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Insert a block of `n` items created toghether into the arena, allocating more capacity if necessary. 
+    /// 
+    /// `create` is called with a vector of `n` indices, allowing for the creating inserting datastructres
+    /// where elements cross-reference each other by index. `create` must return exactly as many items as
+    /// indices are provided.
+    /// 
+    /// The vector of indices is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use generational_arena::{Arena, Index};
+    ///
+    /// let mut arena = Arena::new();
+    /// 
+    /// struct Node {
+    ///     previous: Option<Index>,
+    ///     next: Option<Index>
+    /// }
+    ///
+    /// let idx = arena.insert_many_with(|idx| vec![
+    ///     Node { previous: None, next: Some(idx[1]) }
+    ///     Node { previous: Some(idx[0]), next: None }
+    /// ]);
+    /// 
+    /// assert_eq!(arena[idx[0]].previous, idx[1]);
+    /// ```
+    /// 
+    #[inline]
+    pub fn insert_many_with<F: FnOnce(&Vec<Index>) -> Vec<T>>(&mut self, n: usize, create: F) -> Vec<Index> {
+        
+        let indices : Vec<Index> = (0..n).map(|i| {
+            self.try_alloc_next_index().unwrap_or_else(|| {
+                let len = self.items.len();
+                self.reserve(len.max(n-i));
+                self.try_alloc_next_index().expect("allocating will succeed after reserving additional space")
+            })
+        }).collect();
+
+        let items = create(&indices);
+
+        if items.len() != n {
+            panic!("number of requested items and number of created items mismatch")
+        }
+
+        for (index, item) in indices.iter().zip(items.into_iter()) {
+            self.items[index.index] = Entry::Occupied {
+                generation: self.generation,
+                value: item,
+            };
+        }
+        
+        indices
+    }
+
     #[inline(never)]
     fn insert_slow_path(&mut self, value: T) -> Index {
         let len = self.items.len();
